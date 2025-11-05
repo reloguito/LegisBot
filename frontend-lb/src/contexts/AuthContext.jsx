@@ -15,8 +15,8 @@ export const AuthProvider = ({ children }) => {
       if (token) {
         try {
           const { data } = await api.get("/auth/users/me");
+          console.log("User loadedddddd", data);
           setUser(data);
-          console.log("User loaded", data);
         } catch (err) {
           console.error("Token invalid", err);
           localStorage.removeItem("token");
@@ -38,19 +38,19 @@ export const AuthProvider = ({ children }) => {
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
     }});
-    console.log(data);
+    console.log("Logged in user me.data1:", data);
     localStorage.setItem("token", data.access_token);
     const me = await api.get("/auth/users/me");
-    setUser(me.data.user);
-    console.log("Logged in user:", me.data);
+    setUser(me.data);
+    console.log("Logged in user me.data2:", me.data);
     return me.data;
   
   };
 
   const register = async (payload) => {
     const { data } = await api.post("/auth/register", payload);
-    localStorage.setItem("token", data.token);
-    const me = await api.get("/auth/me");
+    await localStorage.setItem("token", data.token);
+    const me = await api.get("/auth/users/me");
     setUser(me.data.user);
     return me.data.user;
   };

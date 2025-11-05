@@ -18,10 +18,12 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
     role: UserRole = UserRole.user
+    has_completed_onboarding: bool = False
 
 class UserInDB(UserBase):
     id: int
     role: UserRole
+    has_completed_onboarding: bool
     class Config:
         orm_mode = True
 

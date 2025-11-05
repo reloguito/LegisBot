@@ -15,7 +15,7 @@ const Register = () => {
     try {
       const user = await register(form);
       // si backend devuelve user.onboardingComplete, redirigir
-      if (user.onboardingComplete) navigate("/");
+      if (await user.has_completed_onboarding) navigate("/onboarding");
       else navigate("/onboarding");
     } catch (err) {
       setError(err.response?.data?.message || "Error al registrar");

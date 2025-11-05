@@ -44,7 +44,8 @@ def create_user(db: Session, user: schemas.UserCreate):
     db_user = models.User(
         email=user.email, 
         hashed_password=hashed_password, 
-        role=user.role
+        role=user.role,
+        has_completed_onboarding=user.has_completed_onboarding
     )
     db.add(db_user)
     db.commit()
@@ -64,6 +65,11 @@ def create_onboarding_profile(db: Session, profile: schemas.OnboardingProfileCre
         db_profile = models.OnboardingProfile(**profile.dict(), user_id=user_id)
         db.add(db_profile)
     
+    # Actualizar el campo 'has_completed_onboarding' del usuario
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if user and not user.has_completed_onboarding:
+        user.has_completed_onboarding = True
+
     db.commit()
     db.refresh(db_profile)
     return db_profile

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON, Enum as SQLEnum
+from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, DateTime, JSON, Enum as SQLEnum
 from sqlalchemy.orm import relationship
 from .database import Base
 import datetime
@@ -14,7 +14,8 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     role = Column(SQLEnum(UserRole), default=UserRole.user, nullable=False)
-    
+    has_completed_onboarding = Column(Boolean, default=False , nullable=False)
+
     profile = relationship("OnboardingProfile", back_populates="user", uselist=False)
     chat_histories = relationship("ChatHistory", back_populates="user")
 

@@ -14,7 +14,14 @@ const Login = () => {
     e.preventDefault();
     try {
       const user = await login(form.email, form.password);
-      if (user.onboardingComplete) navigate("/");
+      console.log("Logged in user 1111:", user);
+      // reemplaza $SELECTION_PLACEHOLDER$ por esto:
+      const returned = user; // si login() ya devuelve el usuario, esto es directo
+      // si login() devuelve { data: { user } } usa: const returned = user.data?.user ?? user;
+      const completed = returned?.has_completed_onboarding;
+      console.log("Parsed user:", returned, "has_completed_onboarding:", completed);
+
+      if (completed) navigate("/");
       else navigate("/onboarding");
     } catch (err) {
       setError(err.response?.data?.message || "Error al iniciar sesión");
