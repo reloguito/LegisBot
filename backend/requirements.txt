@@ -2,11 +2,14 @@ fastapi[all]
 uvicorn[standard]
 sqlalchemy
 pydantic
+pydantic-settings
 python-jose[cryptography]
-passlib[bcrypt]
+passlib
 python-multipart
 langchain
 langchain-community
 langchain-ollama
 chromadb
 pypdf
+bcrypt==4.3.0
+langchain-text-splitters
