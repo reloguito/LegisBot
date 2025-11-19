@@ -13,3 +13,5 @@ chromadb
 pypdf
 bcrypt==4.3.0
 langchain-text-splitters
+langchain-core
+langchain-classic
