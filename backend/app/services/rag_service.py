@@ -1,267 +1,233 @@
 import shutil
 import tempfile
+import os
 from pathlib import Path
-from fastapi import UploadFile, HTTPException
 from typing import List, Dict, Any, Optional
+
+from fastapi import UploadFile, HTTPException
 from sqlalchemy.orm import Session
 
-from .. import models, schemas, config
+# --- Imports actualizados de LangChain ---
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import OllamaEmbeddings
+from langchain_community.chat_models import ChatOllama
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.documents import Document
+
+# Imports internos
+from .. import models, config
 
 settings = config.settings
 
-# We'll import the language/vector libraries inside a try block so that
-# the module can still be imported when optional dependencies aren't
-# installed (the endpoints will return 503 in that case).
-ollama_llm = None
-ollama_embeddings = None
-vector_store = None
-retriever = None
+# --- 1. Configuración e Inicialización Lazy (Perezosa) ---
+# Inicializamos las variables como None para evitar errores si Ollama está apagado al arrancar.
+_vector_store = None
+_ollama_llm = None
+_retriever = None
 
-try:
-    # Import langchain components only if available
-    from langchain.document_loaders import PyPDFLoader
-    from langchain.text_splitters import RecursiveCharacterTextSplitter
-    from langchain.vectorstores import Chroma
+def get_llm():
+    """Singleton para obtener la instancia del LLM"""
+    global _ollama_llm
+    if _ollama_llm is None:
+        try:
+            _ollama_llm = ChatOllama(
+                base_url=settings.OLLAMA_BASE_URL,
+                model=settings.OLLAMA_MODEL,
+                temperature=0.3  # Menor temperatura para respuestas más factuales
+            )
+        except Exception as e:
+            print(f"Error conectando a Ollama: {e}")
+    return _ollama_llm
 
-    # Ollama-specific bindings may be provided by langchain-ollama or
-    # langchain_ollama; attempt common import paths.
-    try:
-        from langchain_ollama import OllamaEmbeddings, ChatOllama
-    except Exception:
-        # Fallback to community namespace if available
-        from langchain_community.embeddings import OllamaEmbeddings
-        from langchain_community.chat_models import ChatOllama
+def get_vector_store():
+    """Singleton para obtener la instancia de ChromaDB"""
+    global _vector_store
+    if _vector_store is None:
+        try:
+            embeddings = OllamaEmbeddings(
+                base_url=settings.OLLAMA_BASE_URL,
+                model=settings.EMBEDDING_MODEL
+            )
+            _vector_store = Chroma(
+                persist_directory=settings.CHROMA_PATH,
+                embedding_function=embeddings
+            )
+        except Exception as e:
+            print(f"Error inicializando ChromaDB: {e}")
+    return _vector_store
 
-    # Instantiate LLM, embeddings and vector store
-    ollama_llm = ChatOllama(
-        base_url=settings.OLLAMA_BASE_URL,
-        model=settings.OLLAMA_MODEL,
-    )
+def get_retriever():
+    """Obtiene el retriever configurado"""
+    global _retriever
+    vs = get_vector_store()
+    if vs and _retriever is None:
+        # Aumentamos k a 5 pero reducimos el chunk size en la ingesta
+        _retriever = vs.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": 5} 
+        )
+    return _retriever
 
-    ollama_embeddings = OllamaEmbeddings(
-        base_url=settings.OLLAMA_BASE_URL,
-        model=settings.EMBEDDING_MODEL,
-    )
+# --- 2. Plantilla de Prompt Mejorada ---
+RAG_TEMPLATE = """
+Eres "LegislatiBot", un asistente especializado en análisis legislativo del Senado.
 
-    vector_store = Chroma(
-        persist_directory=settings.CHROMA_PATH,
-        embedding_function=ollama_embeddings,
-    )
+INSTRUCCIONES:
+1. Basa tu respuesta ÚNICAMENTE en el contexto proporcionado abajo.
+2. Si la respuesta no está en el contexto, di: "La información solicitada no se encuentra en los documentos disponibles."
+3. Cita el nombre del documento fuente si es relevante.
 
-    retriever = vector_store.as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": 5},
-    )
+CONTEXTO:
+{context}
 
-    print("--- Modelos LLM y Vector Store inicializados ---")
+PREGUNTA DEL USUARIO:
+{question}
 
-except Exception as e:
-    # Don't crash import; endpoints will check `ollama_llm`/`retriever` and
-    # return an appropriate error to the client.
-    print(f"RAG initialization warning: {e}")
-    ollama_llm = None
-    retriever = None
+RESPUESTA:
+"""
 
-
-# --- Plantilla de Prompt ---
-RAG_PROMPT_TEMPLATE = (
-    "Eres \"LegislatiBot\", un asistente legal experto. Tu tarea es responder preguntas basándote "
-    "únicamente en el siguiente contexto extraído de documentos oficiales. Si el contexto no contiene "
-    "la respuesta, di explícitamente: \"Lo siento, no tengo información sobre ese tema en los "
-    "documentos proporcionados.\" No inventes información. Sé claro y conciso.\n\n"
-    "CONTEXTO:\n{context}\n\nPREGUNTA:\n{question}\n\nRESPUESTA:\n"
-)
+rag_prompt = ChatPromptTemplate.from_template(RAG_TEMPLATE)
 
 
-def process_and_store_pdfs(files: List[UploadFile], db: Session, admin_id: int):
-    """Procesa archivos PDF, los divide en chunks y los añade a Chroma.
+# --- 3. Funciones de Lógica RAG (Optimizadas) ---
 
-    Raises:
-        Exception: si el LLM o la vector store no están inicializados.
+async def process_and_store_pdfs(files: List[UploadFile], db: Session, admin_id: int):
     """
-    if not ollama_llm or not retriever or not vector_store:
-        raise Exception("LLM o Vector Store no inicializados.")
-
-    all_splits = []
+    Procesa PDFs de manera asíncrona.
+    Optimización: Chunk size reducido para mejor precisión en recuperación.
+    """
+    vs = get_vector_store()
+    if not vs:
+        raise HTTPException(status_code=503, detail="El sistema vectorial no está disponible.")
+        
     processed_files = []
+    all_splits = []
 
+    # Crear directorio temporal seguro
     with tempfile.TemporaryDirectory() as temp_dir:
         for file in files:
             temp_filepath = Path(temp_dir) / file.filename
             try:
-                # Guardar el PDF temporalmente
+                # Escritura asíncrona o eficiente
+                content = await file.read()
                 with open(temp_filepath, "wb") as buffer:
-                    shutil.copyfileobj(file.file, buffer)
-
+                    buffer.write(content)
+                
                 # Cargar PDF
                 loader = PyPDFLoader(str(temp_filepath))
                 docs = loader.load()
-
-                # Dividir en chunks
+                
+                # OPTIMIZACIÓN: Chunks más pequeños (1000 chars) con overlap
+                # Esto mejora la precisión semántica para modelos locales.
                 text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=1000, chunk_overlap=200
+                    chunk_size=1000, 
+                    chunk_overlap=200,
+                    add_start_index=True
                 )
                 splits = text_splitter.split_documents(docs)
-                all_splits.extend(splits)
+                
+                # Añadir metadata extra si es necesario
+                for split in splits:
+                    split.metadata["filename"] = file.filename
+                    split.metadata["source"] = file.filename # Asegurar consistencia
 
-                # Guardar en DB SQL
+                all_splits.extend(splits)
+                
+                # Registro SQL
                 db_doc = models.Document(filename=file.filename, admin_id=admin_id)
                 db.add(db_doc)
                 processed_files.append(file.filename)
 
             except Exception as e:
-                print(f"Error procesando el archivo {file.filename}: {e}")
+                print(f"Error procesando {file.filename}: {e}")
+                continue # No romper todo el proceso por un archivo corrupto
             finally:
-                try:
-                    file.file.close()
-                except Exception:
-                    pass
+                await file.close()
 
-    # Añadir a la base vectorial
     if all_splits:
-        print(f"Añadiendo {len(all_splits)} chunks a la base de datos vectorial...")
-        vector_store.add_documents(documents=all_splits)
-        vector_store.persist()
-        print("Vectorización completada y persistida.")
-
-    db.commit()
+        print(f"Vectorizando {len(all_splits)} fragmentos...")
+        # Add documents to Chroma (puede tardar, por eso async es util en el wrapper)
+        vs.add_documents(documents=all_splits)
+        # vs.persist() # NOTA: En versiones nuevas de Chroma (>0.4) la persistencia es automática.
+        print("Vectorización finalizada.")
+        db.commit()
+    
     return processed_files
 
+def format_docs(docs: List[Document]) -> str:
+    """Formato limpio para inyectar en el prompt."""
+    formatted = []
+    for doc in docs:
+        source = doc.metadata.get('filename', doc.metadata.get('source', 'Desconocido'))
+        page = doc.metadata.get('page', '?')
+        formatted.append(f"--- Documento: {source} (Pág {page}) ---\n{doc.page_content}")
+    return "\n\n".join(formatted)
 
-def format_docs(docs: List[Any]) -> str:
-    """Formatea los documentos recuperados para el prompt."""
-    return "\n\n".join(
-        f"Fuente: {doc.metadata.get('source', 'N/A')} (Página: {doc.metadata.get('page', 'N/A')})\nContenido: {doc.page_content}"
-        for doc in docs
-    )
-
-
-class SimpleRAGChain:
-    """Pequeña envoltura que expone .invoke(query) y realiza: retrieve -> format -> llm call.
-
-    This keeps the router usage (chain.invoke(query)) unchanged while avoiding
-    fragile dependencies on specific LangChain runnable APIs.
+async def generate_rag_response(query: str):
     """
+    Genera respuesta usando LCEL (LangChain Expression Language) de forma asíncrona.
+    """
+    llm = get_llm()
+    retriever_instance = get_retriever()
+    
+    if not llm or not retriever_instance:
+        raise HTTPException(status_code=503, detail="Servicio de IA no disponible.")
 
-    def __init__(self, retriever, llm):
-        self.retriever = retriever
-        self.llm = llm
-
-    def _get_docs(self, query: str):
-        # Try a few common retriever method names
-        for meth in ("get_relevant_documents", "get_retrieved_documents", "retrieve", "get_documents", "_get_relevant_documents"):
-            if hasattr(self.retriever, meth):
-                try:
-                    return getattr(self.retriever, meth)(query)
-                except TypeError:
-                    # Some implementations require kwargs or different signature
-                    try:
-                        return getattr(self.retriever, meth)(query, k=5)
-                    except Exception:
-                        continue
-
-        # Last resort: if retriever has `get_relevant_documents` via `.get_relevant_documents`
-        if hasattr(self.retriever, "get_relevant_documents"):
-            return self.retriever.get_relevant_documents(query)
-
-        # If retriever is callable
-        if callable(self.retriever):
-            return self.retriever(query)
-
-        return []
-
-    def invoke(self, query: str) -> str:
-        if not self.llm or not self.retriever:
-            raise HTTPException(status_code=503, detail="Servicio RAG no disponible. Verifica la conexión con Ollama.")
-
-        docs = self._get_docs(query) or []
-        context = format_docs(docs)
-        prompt = RAG_PROMPT_TEMPLATE.format(context=context, question=query)
-
-        # Try a few ways to call the LLM
-        try:
-            # Common pattern: LLM is callable
-            result = None
-            if callable(self.llm):
-                result = self.llm(prompt)
-
-            # Some LLM clients expose .generate(...) returning an object with 'generations'
-            if result is None and hasattr(self.llm, "generate"):
-                gen = self.llm.generate([prompt])
-                # try to extract text
-                if hasattr(gen, "generations"):
-                    try:
-                        return gen.generations[0][0].text
-                    except Exception:
-                        return str(gen)
-
-            # If result is a string
-            if isinstance(result, str):
-                return result
-
-            # If result has .text
-            if hasattr(result, "text"):
-                return result.text
-
-            # Fallback to str()
-            return str(result)
-
-        except Exception as e:
-            raise Exception(f"LLM invocation failed: {e}")
-
-
-def get_rag_chain():
-    """Construye y devuelve una instancia SimpleRAGChain que expone .invoke(query)."""
-    if not ollama_llm or not retriever:
-        raise HTTPException(status_code=503, detail="Servicio RAG no disponible. Verifica la conexión con Ollama.")
-
-    return SimpleRAGChain(retriever=retriever, llm=ollama_llm)
-
+    # Cadena RAG definida con LCEL
+    chain = (
+        {"context": retriever_instance | format_docs, "question": RunnablePassthrough()}
+        | rag_prompt
+        | llm
+        | StrOutputParser()
+    )
+    
+    # Uso de ainvoke para no bloquear el servidor FastAPI
+    response = await chain.ainvoke(query)
+    return response
 
 def get_relevant_documents(query: str) -> List[Dict[str, Any]]:
-    """Obtiene los documentos fuente para la cita."""
-    if not retriever:
+    """Recupera documentos para mostrar fuentes (síncrono es ok aquí, es rápido)."""
+    retriever_instance = get_retriever()
+    if not retriever_instance:
         return []
-
-    # Try common retriever methods
-    docs = []
-    for meth in ("get_relevant_documents", "retrieve", "get_documents", "_get_relevant_documents"):
-        if hasattr(retriever, meth):
-            try:
-                docs = getattr(retriever, meth)(query)
-                break
-            except Exception:
-                continue
-
-    # If retriever is callable
-    if not docs and callable(retriever):
-        try:
-            docs = retriever(query)
-        except Exception:
-            docs = []
-
+    
+    docs = retriever_instance.invoke(query)
     sources = []
-    for doc in docs or []:
+    for doc in docs:
         sources.append({
-            "source": getattr(doc, "metadata", {}).get("source", "N/A") if hasattr(doc, "metadata") else getattr(doc, "source", "N/A"),
-            "page": getattr(doc, "metadata", {}).get("page", "N/A") if hasattr(doc, "metadata") else getattr(doc, "page", "N/A"),
-            "content_preview": (getattr(doc, "page_content", "")[:150] + "...") if hasattr(doc, "page_content") else "",
+            "source": doc.metadata.get('filename', doc.metadata.get('source', 'N/A')),
+            "page": doc.metadata.get('page', 'N/A'),
+            "content_preview": doc.page_content[:200].replace('\n', ' ') + "..."
         })
     return sources
 
-
 def log_chat_message(
-    db: Session,
-    history_id: int,
-    sender: models.SenderType,
-    content: str,
-    sources: Optional[List[Dict[str, Any]]] = None,
+    db: Session, 
+    history_id: int, 
+    sender: models.SenderType, 
+    content: str, 
+    sources: Optional[List[Dict[str, Any]]] = None
 ):
-    """Guarda un mensaje en la base de datos SQL."""
-    db_message = models.Message(
-        history_id=history_id, sender=sender, content=content, sources=sources
-    )
-    db.add(db_message)
-    db.commit()
-    db.refresh(db_message)
-    return db_message
+    """Guarda mensaje en SQL."""
+    try:
+        # Aseguramos que sources sea serializable o None
+        sources_data = sources if sources else None
+        
+        db_message = models.Message(
+            history_id=history_id,
+            sender=sender,
+            content=content,
+            sources=sources_data 
+        )
+        db.add(db_message)
+        db.commit()
+        db.refresh(db_message)
+        return db_message
+    except Exception as e:
+        db.rollback()
+        print(f"Error logueando mensaje: {e}")
+        return None

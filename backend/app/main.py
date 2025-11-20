@@ -7,7 +7,7 @@ from .routers import auth_router, chat_router, admin_router
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title="LegislatiBot API",
+    title="LegisBot API",
     description="API para gestionar usuarios, chat RAG y analíticas.",
     version="1.0.0"
 )

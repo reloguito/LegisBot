@@ -21,7 +21,7 @@ const Navbar = () => {
           </>
         ) : (
           <div className="flex items-center gap-4">
-            <span className="text-sm">Hola, {user.name}</span>
+            <span className="text-sm">Hola, {user.nombre}</span>
             <button onClick={logout} className="bg-red-500 text-white px-3 py-1 rounded">Salir</button>
           </div>
         )}
