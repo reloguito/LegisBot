@@ -50,16 +50,8 @@ const ChatPage = () => {
       <h2 className="text-xl font-semibold mb-4">Chat (Consulta documentos)</h2>
 
       <div className="mb-4">
-        <label className="block text-sm">Contexto / documento (opcional):</label>
-        <select 
-          value={selectedContext} 
-          onChange={e => setSelectedContext(e.target.value)} 
-          className="p-2 border rounded mt-1 w-full"
-          disabled={isLoading}
-        >
-          <option value="">-- Todos los contextos --</option>
-          {contexts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+        <label className="block text-sm">Realiza tu consulta sobre la Versión Taquigrafica:</label>
+        
       </div>
 
       <div className="border p-3 rounded h-64 overflow-auto mb-3 bg-gray-50">
