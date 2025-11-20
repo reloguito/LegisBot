@@ -10,7 +10,7 @@ router = APIRouter()
 
 @router.get("/stats/demographics", response_model=List[schemas.DemographicStat])
 def get_demographics(
-    group_by: str = "pais",
+    group_by: str = "provincia",
     admin_user: models.User = Depends(auth_service.get_current_admin_user),
     db: Session = Depends(database.get_db)
 ):
@@ -18,8 +18,8 @@ def get_demographics(
     (Solo Admin) Obtiene estadísticas demográficas de los perfiles de onboarding.
     Agrupa por 'pais' o 'profesion'.
     """
-    if group_by not in ["pais", "profesion"]:
-        group_by_col = models.OnboardingProfile.pais
+    if group_by not in ["provincia", "profesion"]:
+        group_by_col = models.OnboardingProfile.provincia
     else:
         group_by_col = getattr(models.OnboardingProfile, group_by)
 
