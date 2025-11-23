@@ -102,7 +102,7 @@ def get_retriever():
             search_type="similarity", # Búsqueda por similitud coseno (estándar).
             search_kwargs={"k": 5}    # TOP-K: Recuperamos los 5 fragmentos más parecidos.
                                       # Aumentamos a 5 para tener más contexto legislativo.
-        )
+        )   
     return _retriever
 
 # --- 2. Plantilla de Prompt Mejorada ---
